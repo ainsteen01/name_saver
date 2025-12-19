@@ -1,6 +1,8 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
 import psycopg2
 import os
+from datetime import date
 
 app = FastAPI()
 
@@ -12,26 +14,54 @@ if DATABASE_URL is None:
 conn = psycopg2.connect(DATABASE_URL)
 cur = conn.cursor()
 
-# Ensure table exists
+# Ensure table exists without 'name'
 cur.execute("""
-CREATE TABLE IF NOT EXISTS items (
+CREATE TABLE IF NOT EXISTS expense (
     id SERIAL PRIMARY KEY,
-    name TEXT
+    date DATE,
+    category TEXT,
+    description TEXT,
+    amount NUMERIC
 )
 """)
 conn.commit()
 
+# Pydantic model for request body without 'name'
+class Item(BaseModel):
+    date: date
+    category: str
+    description: str
+    amount: float
+
 @app.post("/items")
-def insert_item(name: str):
-    cur.execute("INSERT INTO items (name) VALUES (%s) RETURNING id", (name,))
+def insert_item(item: Item):
+    cur.execute(
+        """
+        INSERT INTO expense (date, category, description, amount)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """,
+        (item.date, item.category, item.description, item.amount)
+    )
     conn.commit()
     inserted_id = cur.fetchone()[0]
-    return {"status": "inserted", "id": inserted_id, "name": name}
+    return {"status": "inserted", "id": inserted_id, "item": item.dict()}
+
+
 
 @app.get("/items")
 def get_items():
-    cur.execute("SELECT id, name FROM items")
+    cur.execute("SELECT id, date, category, description, amount FROM expense")
     rows = cur.fetchall()
-    result = [{"id": r[0], "name": r[1]} for r in rows]
+    result = [
+        {
+            "id": r[0],
+            "date": r[1],
+            "category": r[2],
+            "description": r[3],
+            "amount": float(r[4])
+        } 
+        for r in rows
+    ]
     return result
 
