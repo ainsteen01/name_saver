@@ -31,4 +31,7 @@ def insert_item(name: str):
 @app.get("/items")
 def get_items():
     cur.execute("SELECT id, name FROM items")
-    return cur.fetchall()
+    rows = cur.fetchall()
+    result = [{"id": r[0], "name": r[1]} for r in rows]
+    return result
+
