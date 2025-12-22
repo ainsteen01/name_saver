@@ -144,6 +144,34 @@ def delete_item(item_id: int):
             raise HTTPException(status_code=404, detail="Item not found")
         return {"status": "deleted", "id": item_id}
 
+
+
+@app.put("/items/{item_id}")
+def replace_item(item_id: int, item: Item):
+    """Replace an entire expense item"""
+    with get_db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE expense 
+            SET date = %s, category = %s, description = %s, amount = %s
+            WHERE id = %s
+            RETURNING id, date, category, description, amount
+            """,
+            (item.date, item.category, item.description, item.amount, item_id)
+        )
+        row = cur.fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Item not found")
+        
+        return {
+            "status": "replaced",
+            "id": row[0],
+            "date": row[1],
+            "category": row[2],
+            "description": row[3],
+            "amount": float(row[4])
+        }
 # Health check endpoint
 @app.get("/health")
 def health_check():
