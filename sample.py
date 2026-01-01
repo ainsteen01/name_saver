@@ -158,6 +158,43 @@ def create_user(user: UserCreate):
                 detail="User with this mobile number already exists"
             )
 
+@app.get("/items/daily/{mobile}")
+def get_daily_totals(mobile: str):
+    """Get date-wise total amount for each day for a user"""
+    with get_db_cursor() as cur:
+        # Get user_id
+        cur.execute("SELECT id FROM users WHERE mobile = %s", (mobile,))
+        user_row = cur.fetchone()
+        
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        user_id = user_row[0]
+        
+        # Get date and total amount for each day
+        cur.execute(
+            """
+            SELECT date, SUM(amount) as total_amount, COUNT(*) as count
+            FROM expense 
+            WHERE user_id = %s
+            GROUP BY date
+            ORDER BY date DESC
+            """,
+            (user_id,)
+        )
+        
+        rows = cur.fetchall()
+        
+        return [
+            {
+                "date": row[0],
+                "total_amount": float(row[1]) if row[1] else 0,
+                "transaction_count": row[2]
+            }
+            for row in rows
+        ]
+
+
 @app.get("/users/{mobile}", response_model=UserResponse)
 def get_user_by_mobile(mobile: str):
     """Get user by mobile number"""
