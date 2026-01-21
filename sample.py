@@ -237,116 +237,129 @@ class AIService:
 ai_service = AIService()
 
 def _get_expense_data_from_db(mobile: str, start_date: date, end_date: date) -> Optional[Dict[str, Any]]:
-    """Helper function to fetch expense data from database"""
+    """Helper function to fetch expense data from database - SIMPLIFIED VERSION"""
     with get_db_cursor() as cur:
-        # Get user details
-        cur.execute("SELECT id, name FROM users WHERE mobile = %s", (mobile,))
-        user_row = cur.fetchone()
-        
-        if not user_row:
-            return None
-        
-        user_id = user_row[0]
-        user_name = user_row[1]
-        
-        # Get transaction details
-        cur.execute(
-            """
-            SELECT 
-                id,
-                date,
-                category,
-                description,
-                amount,
-            FROM expense 
-            WHERE user_id = %s AND date BETWEEN %s AND %s
-            ORDER BY date DESC, id DESC
-            """,
-            (user_id, start_date, end_date)
-        )
-        
-        transactions = cur.fetchall()
-        
-        # Get summary statistics
-        cur.execute(
-            """
-            SELECT 
-                COUNT(*) as transaction_count,
-                COALESCE(SUM(amount), 0) as total_amount,
-                MIN(date) as earliest_date,
-                MAX(date) as latest_date
-            FROM expense 
-            WHERE user_id = %s AND date BETWEEN %s AND %s
-            """,
-            (user_id, start_date, end_date)
-        )
-        
-        summary = cur.fetchone()
-        
-        # Get category distribution
-        cur.execute(
-            """
-            SELECT 
-                category,
-                COUNT(*) as count,
-                SUM(amount) as category_total
-            FROM expense 
-            WHERE user_id = %s AND date BETWEEN %s AND %s
-            GROUP BY category
-            ORDER BY category_total DESC
-            """,
-            (user_id, start_date, end_date)
-        )
-        
-        categories = cur.fetchall()
-        
-        if summary[0] == 0:  # No transactions
-            return None
-        
-        # Calculate percentages
-        total_amount = float(summary[1])
-        category_breakdown = []
-        for cat in categories:
-            cat_amount = float(cat[2])
-            percentage = (cat_amount / total_amount * 100) if total_amount > 0 else 0
-            category_breakdown.append({
-                "category": cat[0],
-                "transaction_count": cat[1],
-                "total_amount": cat_amount,
-                "percentage_of_total": round(percentage, 2)
-            })
-        
-        return {
-            "user_info": {
-                "user_id": user_id,
-                "name": user_name,
-                "mobile": mobile
-            },
-            "date_range": {
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-                "days_in_range": (end_date - start_date).days + 1
-            },
-            "summary": {
-                "total_transactions": summary[0],
-                "total_amount": total_amount,
-                "average_transaction_amount": total_amount / summary[0] if summary[0] > 0 else 0,
-                "earliest_date": summary[2].isoformat() if summary[2] else None,
-                "latest_date": summary[3].isoformat() if summary[3] else None
-            },
-            "category_breakdown": category_breakdown,
-            "transactions": [
-                {
+        try:
+            # Get user details
+            cur.execute("SELECT id, name FROM users WHERE mobile = %s", (mobile,))
+            user_row = cur.fetchone()
+            
+            if not user_row:
+                print(f"DEBUG: User with mobile {mobile} not found")
+                return None
+            
+            user_id = user_row[0]
+            user_name = user_row[1]
+            print(f"DEBUG: Found user: {user_name} (ID: {user_id})")
+            
+            # SIMPLIFIED: Query without created_at to avoid syntax errors
+            cur.execute(
+                """
+                SELECT 
+                    id,
+                    date,
+                    category,
+                    description,
+                    amount
+                FROM expense 
+                WHERE user_id = %s AND date BETWEEN %s AND %s
+                ORDER BY date DESC, id DESC
+                """,
+                (user_id, start_date, end_date)
+            )
+            
+            transactions = cur.fetchall()
+            print(f"DEBUG: Found {len(transactions)} transactions")
+            
+            # Get summary statistics
+            cur.execute(
+                """
+                SELECT 
+                    COUNT(*) as transaction_count,
+                    COALESCE(SUM(amount), 0) as total_amount,
+                    MIN(date) as earliest_date,
+                    MAX(date) as latest_date
+                FROM expense 
+                WHERE user_id = %s AND date BETWEEN %s AND %s
+                """,
+                (user_id, start_date, end_date)
+            )
+            
+            summary = cur.fetchone()
+            print(f"DEBUG: Summary - count: {summary[0]}, amount: {summary[1]}")
+            
+            if summary[0] == 0:  # No transactions
+                print(f"DEBUG: No transactions found for user {user_id} in date range")
+                return None
+            
+            # Get category distribution
+            cur.execute(
+                """
+                SELECT 
+                    category,
+                    COUNT(*) as count,
+                    SUM(amount) as category_total
+                FROM expense 
+                WHERE user_id = %s AND date BETWEEN %s AND %s
+                GROUP BY category
+                ORDER BY category_total DESC
+                """,
+                (user_id, start_date, end_date)
+            )
+            
+            categories = cur.fetchall()
+            
+            # Calculate percentages
+            total_amount = float(summary[1])
+            category_breakdown = []
+            for cat in categories:
+                cat_amount = float(cat[2])
+                percentage = (cat_amount / total_amount * 100) if total_amount > 0 else 0
+                category_breakdown.append({
+                    "category": cat[0],
+                    "transaction_count": cat[1],
+                    "total_amount": cat_amount,
+                    "percentage_of_total": round(percentage, 2)
+                })
+            
+            # Format transactions
+            formatted_transactions = []
+            for t in transactions:
+                formatted_transactions.append({
                     "transaction_id": t[0],
                     "date": t[1].isoformat(),
                     "category": t[2],
                     "description": t[3] if t[3] else "No description",
-                    "amount": float(t[4]),
-                    "timestamp": t[5].isoformat() if t[5] else None
-                }
-                for t in transactions
-            ]
-        }
+                    "amount": float(t[4])
+                })
+            
+            return {
+                "user_info": {
+                    "user_id": user_id,
+                    "name": user_name,
+                    "mobile": mobile
+                },
+                "date_range": {
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                    "days_in_range": (end_date - start_date).days + 1
+                },
+                "summary": {
+                    "total_transactions": summary[0],
+                    "total_amount": total_amount,
+                    "average_transaction_amount": total_amount / summary[0] if summary[0] > 0 else 0,
+                    "earliest_date": summary[2].isoformat() if summary[2] else None,
+                    "latest_date": summary[3].isoformat() if summary[3] else None
+                },
+                "category_breakdown": category_breakdown,
+                "transactions": formatted_transactions
+            }
+            
+        except Exception as e:
+            print(f"ERROR in _get_expense_data_from_db: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            raise
 
 @app.get("/items/ai-analysis/{mobile}/{start_date}/{end_date}", response_model=AIAnalysisResponse)
 def get_ai_analysis(mobile: str, start_date: date, end_date: date):
