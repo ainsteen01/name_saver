@@ -258,10 +258,9 @@ def _get_expense_data_from_db(mobile: str, start_date: date, end_date: date) -> 
                 category,
                 description,
                 amount,
-                created_at
             FROM expense 
             WHERE user_id = %s AND date BETWEEN %s AND %s
-            ORDER BY date DESC, created_at DESC
+            ORDER BY date DESC, id DESC
             """,
             (user_id, start_date, end_date)
         )
