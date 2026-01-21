@@ -3,11 +3,19 @@ from pydantic import BaseModel
 import psycopg2
 from psycopg2 import pool, OperationalError
 import os
-from datetime import date
+import requests
+import json
+import re  # ADD THIS
+from datetime import date, datetime, timedelta  # FIXED: Add datetime
 from contextlib import contextmanager
-from typing import List, Optional
+from typing import Optional, Dict, Any, List
 from enum import Enum
-from datetime import date, timedelta
+
+# Add environment variables for AI configuration
+AI_API_URL = os.getenv("AI_API_URL", "https://openrouter.ai/api/v1/chat/completions")
+AI_API_KEY = os.getenv("AI_API_KEY", "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")
+AI_MODEL = os.getenv("AI_MODEL", "deepseek/deepseek-chat-v3-0324")
+AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
 
 app = FastAPI()
 
@@ -52,6 +60,387 @@ class ItemResponse(Item):
     class Config:
         from_attributes = True
 
+# Fixed: Simplified AI response models
+class FinancialInsights(BaseModel):
+    analysis: Optional[str] = None
+    spending_patterns: Optional[str] = None
+    top_categories: Optional[List[Dict[str, Any]]] = None
+    unusual_patterns: Optional[str] = None
+    budgeting_recommendations: Optional[List[str]] = None
+    savings_opportunities: Optional[List[str]] = None
+
+class AIAnalysisResponse(BaseModel):
+    success: bool
+    analysis: Optional[str] = None
+    insights: Optional[FinancialInsights] = None
+    error: Optional[str] = None
+    expense_summary: Optional[Dict[str, Any]] = None
+
+
+class AIService:
+    def __init__(self):
+        self.api_url = AI_API_URL
+        self.api_key = AI_API_KEY
+        self.model = AI_MODEL
+        self.timeout = AI_TIMEOUT
+    
+    def analyze_expenses(self, expense_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Send expense data to OpenRouter AI for analysis
+        """
+        try:
+            # Create a comprehensive prompt for financial analysis
+            prompt = self._create_financial_prompt(expense_data)
+            
+            # Prepare the request payload
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": """You are a financial advisor analyzing expense data. 
+                        Provide detailed, actionable insights in a structured format.
+                        Focus on: spending patterns, category breakdown, unusual expenses,
+                        budgeting recommendations, and savings opportunities.
+                        
+                        Format your response as a JSON object with these keys:
+                        {
+                            "analysis": "Brief overall analysis",
+                            "spending_patterns": "Describe patterns in spending behavior",
+                            "top_categories": [{"category": "name", "percentage": 0.0, "insight": "description"}],
+                            "unusual_patterns": "Any unusual spending patterns noticed",
+                            "budgeting_recommendations": ["recommendation1", "recommendation2"],
+                            "savings_opportunities": ["opportunity1", "opportunity2"]
+                        }"""
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "temperature": 0.7,
+                "max_tokens": 1000
+            }
+            
+            # Make the API call
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:8000",  # Your site URL
+                "X-Title": "Expense Tracker AI"
+            }
+            
+            response = requests.post(
+                self.api_url,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout
+            )
+            
+            if response.status_code == 200:
+                ai_response = response.json()
+                
+                # Extract and parse AI's response
+                ai_content = ai_response["choices"][0]["message"]["content"]
+                
+                # Try to parse JSON from AI response
+                try:
+                    # Look for JSON in the response
+                    json_match = re.search(r'\{.*\}', ai_content, re.DOTALL)
+                    if json_match:
+                        insights_json = json.loads(json_match.group())
+                    else:
+                        insights_json = {"analysis": ai_content}
+                except json.JSONDecodeError:
+                    insights_json = {"analysis": ai_content}
+                
+                return {
+                    "success": True,
+                    "ai_raw_response": ai_response,
+                    "insights": insights_json,
+                    "usage": ai_response.get("usage", {})
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"AI API returned status {response.status_code}: {response.text[:200]}",
+                    "status_code": response.status_code
+                }
+                
+        except requests.exceptions.Timeout:
+            return {
+                "success": False,
+                "error": "AI API request timed out"
+            }
+        except requests.exceptions.ConnectionError:
+            return {
+                "success": False,
+                "error": "Failed to connect to AI API"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"AI API call failed: {str(e)}"
+            }
+    
+    def _create_financial_prompt(self, expense_data: Dict[str, Any]) -> str:
+        """Create a detailed prompt for financial analysis"""
+        
+        user_info = expense_data.get("user_info", {})
+        summary = expense_data.get("summary", {})
+        categories = expense_data.get("category_breakdown", [])
+        transactions = expense_data.get("transactions", [])
+        
+        # Format categories for the prompt
+        categories_text = "\n".join([
+            f"- {cat['category']}: ₹{cat['total_amount']:,.2f} ({cat['percentage_of_total']:.1f}%)"
+            for cat in categories[:10]  # Top 10 categories
+        ])
+        
+        # Format recent transactions
+        recent_transactions = "\n".join([
+            f"- {t['date']}: ₹{t['amount']:,.2f} for {t['category']} - {t['description']}"
+            for t in transactions[:10]  # Recent 10 transactions
+        ])
+        
+        prompt = f"""
+        EXPENSE ANALYSIS REQUEST
+        
+        User: {user_info.get('name', 'Unknown')} ({user_info.get('mobile', 'N/A')})
+        Period: {expense_data.get('date_range', {}).get('start_date', 'N/A')} to {expense_data.get('date_range', {}).get('end_date', 'N/A')}
+        
+        SUMMARY:
+        - Total Transactions: {summary.get('total_transactions', 0)}
+        - Total Amount: ₹{summary.get('total_amount', 0):,.2f}
+        - Average Transaction: ₹{summary.get('average_transaction_amount', 0):,.2f}
+        
+        CATEGORY BREAKDOWN:
+        {categories_text if categories_text else "No categories found"}
+        
+        RECENT TRANSACTIONS:
+        {recent_transactions if recent_transactions else "No transactions found"}
+        
+        Please analyze this expense data and provide:
+        1. Overall spending patterns and habits
+        2. Top spending categories with insights
+        3. Any unusual or concerning patterns
+        4. Specific budgeting recommendations
+        5. Potential savings opportunities
+        
+        Provide response in JSON format as specified.
+        """
+        
+        return prompt
+
+
+# Initialize AI Service
+ai_service = AIService()
+
+def _get_expense_data_from_db(mobile: str, start_date: date, end_date: date) -> Optional[Dict[str, Any]]:
+    """Helper function to fetch expense data from database"""
+    with get_db_cursor() as cur:
+        # Get user details
+        cur.execute("SELECT id, name FROM users WHERE mobile = %s", (mobile,))
+        user_row = cur.fetchone()
+        
+        if not user_row:
+            return None
+        
+        user_id = user_row[0]
+        user_name = user_row[1]
+        
+        # Get transaction details
+        cur.execute(
+            """
+            SELECT 
+                id,
+                date,
+                category,
+                description,
+                amount,
+                created_at
+            FROM expense 
+            WHERE user_id = %s AND date BETWEEN %s AND %s
+            ORDER BY date DESC, created_at DESC
+            """,
+            (user_id, start_date, end_date)
+        )
+        
+        transactions = cur.fetchall()
+        
+        # Get summary statistics
+        cur.execute(
+            """
+            SELECT 
+                COUNT(*) as transaction_count,
+                COALESCE(SUM(amount), 0) as total_amount,
+                MIN(date) as earliest_date,
+                MAX(date) as latest_date
+            FROM expense 
+            WHERE user_id = %s AND date BETWEEN %s AND %s
+            """,
+            (user_id, start_date, end_date)
+        )
+        
+        summary = cur.fetchone()
+        
+        # Get category distribution
+        cur.execute(
+            """
+            SELECT 
+                category,
+                COUNT(*) as count,
+                SUM(amount) as category_total
+            FROM expense 
+            WHERE user_id = %s AND date BETWEEN %s AND %s
+            GROUP BY category
+            ORDER BY category_total DESC
+            """,
+            (user_id, start_date, end_date)
+        )
+        
+        categories = cur.fetchall()
+        
+        if summary[0] == 0:  # No transactions
+            return None
+        
+        # Calculate percentages
+        total_amount = float(summary[1])
+        category_breakdown = []
+        for cat in categories:
+            cat_amount = float(cat[2])
+            percentage = (cat_amount / total_amount * 100) if total_amount > 0 else 0
+            category_breakdown.append({
+                "category": cat[0],
+                "transaction_count": cat[1],
+                "total_amount": cat_amount,
+                "percentage_of_total": round(percentage, 2)
+            })
+        
+        return {
+            "user_info": {
+                "user_id": user_id,
+                "name": user_name,
+                "mobile": mobile
+            },
+            "date_range": {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "days_in_range": (end_date - start_date).days + 1
+            },
+            "summary": {
+                "total_transactions": summary[0],
+                "total_amount": total_amount,
+                "average_transaction_amount": total_amount / summary[0] if summary[0] > 0 else 0,
+                "earliest_date": summary[2].isoformat() if summary[2] else None,
+                "latest_date": summary[3].isoformat() if summary[3] else None
+            },
+            "category_breakdown": category_breakdown,
+            "transactions": [
+                {
+                    "transaction_id": t[0],
+                    "date": t[1].isoformat(),
+                    "category": t[2],
+                    "description": t[3] if t[3] else "No description",
+                    "amount": float(t[4]),
+                    "timestamp": t[5].isoformat() if t[5] else None
+                }
+                for t in transactions
+            ]
+        }
+
+@app.get("/items/ai-analysis/{mobile}/{start_date}/{end_date}", response_model=AIAnalysisResponse)
+def get_ai_analysis(mobile: str, start_date: date, end_date: date):
+    """
+    Get expense data, analyze with AI, and return combined insights
+    Complete automated pipeline: Database → AI API → User
+    """
+    # Validate date range
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=400, 
+            detail="Start date must be before or equal to end date"
+        )
+    
+    try:
+        # Get expense data from database
+        expense_data = _get_expense_data_from_db(mobile, start_date, end_date)
+        
+        if not expense_data:
+            return {
+                "success": False,
+                "error": "No expense data found for the given criteria",
+                "expense_summary": None
+            }
+        
+        # Call AI API for analysis
+        ai_result = ai_service.analyze_expenses(expense_data)
+        
+        if ai_result["success"]:
+            # Parse insights from AI response
+            insights_data = ai_result.get("insights", {})
+            
+            # Create structured insights
+            insights = FinancialInsights(
+                analysis=insights_data.get("analysis"),
+                spending_patterns=insights_data.get("spending_patterns"),
+                top_categories=insights_data.get("top_categories", []),
+                unusual_patterns=insights_data.get("unusual_patterns"),
+                budgeting_recommendations=insights_data.get("budgeting_recommendations", []),
+                savings_opportunities=insights_data.get("savings_opportunities", [])
+            )
+            
+            return {
+                "success": True,
+                "analysis": insights_data.get("analysis", ""),
+                "insights": insights,
+                "expense_summary": {
+                    "user": expense_data["user_info"]["name"],
+                    "period": f"{start_date} to {end_date}",
+                    "total_amount": expense_data["summary"]["total_amount"],
+                    "transaction_count": expense_data["summary"]["total_transactions"],
+                    "top_category": expense_data["category_breakdown"][0]["category"] if expense_data["category_breakdown"] else "None"
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "error": ai_result["error"],
+                "expense_summary": {
+                    "user": expense_data["user_info"]["name"],
+                    "period": f"{start_date} to {end_date}",
+                    "total_amount": expense_data["summary"]["total_amount"],
+                    "transaction_count": expense_data["summary"]["total_transactions"]
+                }
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process AI analysis: {str(e)}"
+        )
+
+# Add a simple test endpoint
+@app.get("/test-ai")
+def test_ai_endpoint():
+    """Test if AI API is working"""
+    test_data = {
+        "user_info": {"name": "Test User", "mobile": "1234567890"},
+        "summary": {"total_transactions": 5, "total_amount": 5000, "average_transaction_amount": 1000},
+        "category_breakdown": [
+            {"category": "Food", "total_amount": 2000, "percentage_of_total": 40},
+            {"category": "Transport", "total_amount": 1500, "percentage_of_total": 30}
+        ],
+        "transactions": [
+            {"date": "2024-01-15", "amount": 1000, "category": "Food", "description": "Restaurant"}
+        ]
+    }
+    
+    result = ai_service.analyze_expenses(test_data)
+    return {"ai_test_result": result}
+    
 @app.on_event("startup")
 async def startup():
     """Initialize connection pool on startup"""
