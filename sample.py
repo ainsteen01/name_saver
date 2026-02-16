@@ -932,7 +932,61 @@ def insert_item(mobile: str, item: Item):
             "description": inserted_row[4],
             "amount": float(inserted_row[5])
         }
-
+@app.get("/items/daily-range/{mobile}/{start_date}/{end_date}")
+def get_daily_totals_in_range(mobile: str, start_date: str, end_date: str):
+    """
+    Get daily totals for a specific date range.
+    
+    Example: /items/daily-range/7909103947/2024-01-01/2024-01-15
+    """
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    
+    if start > end:
+        raise HTTPException(status_code=400, detail="Start date must be before or equal to end date")
+    
+    with get_db_cursor() as cur:
+        # Get user_id
+        cur.execute("SELECT id FROM users WHERE mobile = %s", (mobile,))
+        user_row = cur.fetchone()
+        
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        user_id = user_row[0]
+        
+        # Get daily totals for the date range
+        cur.execute(
+            """
+            SELECT date, SUM(amount) as total_amount, COUNT(*) as count
+            FROM expense 
+            WHERE user_id = %s AND date BETWEEN %s AND %s
+            GROUP BY date
+            ORDER BY date
+            """,
+            (user_id, start, end)
+        )
+        
+        rows = cur.fetchall()
+        
+        return {
+            "user_id": user_id,
+            "mobile": mobile,
+            "start_date": start,
+            "end_date": end,
+            "daily_totals": [
+                {
+                    "date": row[0],
+                    "total_amount": float(row[1]) if row[1] else 0,
+                    "transaction_count": row[2]
+                }
+                for row in rows
+            ]
+        }
+        
 @app.get("/items", response_model=List[ItemResponse])
 def get_items_by_user(mobile: str):
     """Get all expense items for a specific user"""
